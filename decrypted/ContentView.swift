@@ -256,9 +256,10 @@ class AppAnalyzer: ObservableObject {
     }
     
     private func isProcessRunning(appName: String) -> Bool {
+        let escapedName = NSRegularExpression.escapedPattern(for: appName)
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-x", appName]
+        task.arguments = ["-x", escapedName]
         
         do {
             try task.run()

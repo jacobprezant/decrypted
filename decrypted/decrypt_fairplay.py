@@ -114,11 +114,16 @@ def get_nonwritable_regions(pid: int) -> List[Tuple[str, int, int, str]]:
 def launch_process(target_process: str, progress: ProgressReporter) -> int:
     """Launch target process and return its PID"""
     progress.report(f"Launching {target_process}...")
-    
-    subprocess.run(["open", "-j", "-g", "-a", target_process])
+
+    sudo_user = os.environ.get("SUDO_USER")
+    if not sudo_user:
+        raise DecryptionError("Refusing to launch app as root; missing SUDO_USER")
+
+    subprocess.run(["sudo", "-u", sudo_user, "open", "-j", "-g", "-a", target_process])
     time.sleep(5)
     
-    process = subprocess.Popen(["pgrep", "-x", target_process], stdout=subprocess.PIPE)
+    safe_name = re.escape(target_process)
+    process = subprocess.Popen(["pgrep", "-x", safe_name], stdout=subprocess.PIPE)
     output = process.stdout.read().decode().strip()
     
     if not output:

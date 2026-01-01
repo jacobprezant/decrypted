@@ -104,8 +104,9 @@ class AppAnalyzer:
 def is_process_running(app_name: str) -> bool:
     """Check if an application process is currently running"""
     try:
+        safe_name = "".join("\\" + c if c in ".^$*+?{}[]\\|()" else c for c in app_name)
         result = subprocess.run(
-            ["pgrep", "-x", app_name],
+            ["pgrep", "-x", safe_name],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -153,6 +154,8 @@ def is_ios_app(app_path: str) -> bool:
 def is_encrypted_binary(binary_path: str) -> bool:
     """Check if a binary is FairPlay encrypted"""
     try:
+        if ".app/" not in binary_path:
+            return False
         binary = lief.parse(binary_path)
         if binary is None or binary.format != lief.Binary.FORMATS.MACHO:
             return False
