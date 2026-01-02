@@ -7,6 +7,7 @@ Based on the original decrypt-fairplay/main.py with improvements for GUI integra
 import os
 import sys
 import shutil
+import tempfile
 import subprocess
 import glob
 import re
@@ -19,8 +20,9 @@ from typing import Tuple, List, Optional
 from pathlib import Path
 
 
-CORE_DUMP_PATH = "/tmp/dumped"
-CORE_DUMP_PATH_TMP = f"{CORE_DUMP_PATH}.tmp"
+CORE_DUMP_DIR = None
+CORE_DUMP_PATH = None
+CORE_DUMP_PATH_TMP = None
 
 
 class DecryptionError(Exception):
@@ -73,9 +75,25 @@ def check_root() -> None:
 
 def cleanup() -> None:
     """Clean up temporary files"""
-    for file in [CORE_DUMP_PATH, CORE_DUMP_PATH_TMP]:
-        if os.path.exists(file):
-            os.remove(file)
+    global CORE_DUMP_DIR, CORE_DUMP_PATH, CORE_DUMP_PATH_TMP
+    if CORE_DUMP_DIR and os.path.exists(CORE_DUMP_DIR):
+        real_path = os.path.realpath(CORE_DUMP_DIR)
+        if real_path.startswith("/tmp/") and not os.path.islink(CORE_DUMP_DIR):
+            shutil.rmtree(CORE_DUMP_DIR)
+    CORE_DUMP_DIR = None
+    CORE_DUMP_PATH = None
+    CORE_DUMP_PATH_TMP = None
+
+
+def init_temp_paths() -> None:
+    """Initialize secure temp paths under /tmp"""
+    global CORE_DUMP_DIR, CORE_DUMP_PATH, CORE_DUMP_PATH_TMP
+    if CORE_DUMP_DIR:
+        return
+    CORE_DUMP_DIR = tempfile.mkdtemp(prefix="decrypted-", dir="/tmp")
+    os.chmod(CORE_DUMP_DIR, 0o700)
+    CORE_DUMP_PATH = os.path.join(CORE_DUMP_DIR, "dumped")
+    CORE_DUMP_PATH_TMP = f"{CORE_DUMP_PATH}.tmp"
 
 
 def get_nonwritable_regions(pid: int) -> List[Tuple[str, int, int, str]]:
@@ -136,6 +154,7 @@ def launch_process(target_process: str, progress: ProgressReporter) -> int:
 
 def dump_core(pid: int, progress: ProgressReporter) -> str:
     """Dump core file for the target process"""
+    init_temp_paths()
     progress.report("Dumping process memory...")
     
     result = subprocess.run(
@@ -303,20 +322,20 @@ def create_ipa_file(
     # Copy original app content
     progress.report("Copying application content...")
     subprocess.run(["sudo", "-u", login_user, "mkdir", "Payload"], check=True)
-    subprocess.run(["sudo", "-u", login_user, "cp", "-R", app_path, dest_app_path], check=True)
+    subprocess.run(["sudo", "-u", login_user, "cp", "-R", "--", app_path, dest_app_path], check=True)
 
     # Copy decrypted executables
     progress.report("Installing decrypted binaries...")
     for ios_path, decrypted_executable_path in decrypted_binaries:
         target_path = os.path.join("./Payload", ios_path)
         subprocess.run(
-            ["sudo", "-u", login_user, "cp", decrypted_executable_path, target_path],
+            ["sudo", "-u", login_user, "cp", "--", decrypted_executable_path, target_path],
             check=True
         )
 
     # Copy provisioning profile
     subprocess.run(
-        ["sudo", "-u", login_user, "cp", profile_path, 
+        ["sudo", "-u", login_user, "cp", "--", profile_path,
          os.path.join(dest_app_path, "embedded.provisionprofile")],
         check=True
     )
@@ -325,23 +344,23 @@ def create_ipa_file(
     progress.report("Re-signing frameworks...")
     for framework_path in glob.glob(os.path.join(dest_app_path, "Frameworks", "*")):
         subprocess.run(
-            ["sudo", "-u", login_user, "codesign", "--force", "--sign", signing_identity, 
-             "--entitlements", entitlements_path, framework_path],
+            ["sudo", "-u", login_user, "codesign", "--force", "--sign", signing_identity,
+             "--entitlements", entitlements_path, "--", framework_path],
             check=True
         )
 
     # Re-sign main executable
     progress.report("Re-signing main executable...")
     subprocess.run(
-        ["sudo", "-u", login_user, "codesign", "--force", "--sign", signing_identity, 
-         "--entitlements", entitlements_path, dest_app_path],
+        ["sudo", "-u", login_user, "codesign", "--force", "--sign", signing_identity,
+         "--entitlements", entitlements_path, "--", dest_app_path],
         check=True
     )
 
     # Create IPA file
     progress.report("Packaging IPA...")
     subprocess.run(
-        ["sudo", "-u", login_user, "zip", "-r", f"{app_exec_name}.ipa", "Payload"],
+        ["sudo", "-u", login_user, "zip", "-r", f"{app_exec_name}.ipa", "--", "Payload"],
         check=True
     )
     
@@ -397,7 +416,10 @@ def main():
                 continue
 
             # Create decrypted binary
-            output_path = f"/tmp/{os.path.basename(binary_path)}.decrypted"
+            init_temp_paths()
+            output_path = os.path.join(
+                CORE_DUMP_DIR, f"{os.path.basename(binary_path)}.decrypted"
+            )
             shutil.copy(binary_path, output_path)
 
             # Write decrypted content
